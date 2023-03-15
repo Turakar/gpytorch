@@ -195,23 +195,33 @@ class NNVariationalStrategy(UnwhitenedVariationalStrategy):
             expanded_variational_stddev = variational_stddev.unsqueeze(-1).expand(*batch_shape, self.M, self.k)
             variational_inducing_covar = expanded_variational_stddev.gather(-2, expanded_nn_indices) ** 2
             assert variational_inducing_covar.shape == (*batch_shape, x_bsz, self.k)
-            variational_inducing_covar = DiagLinearOperator(variational_inducing_covar)
-            assert variational_inducing_covar.shape == (*batch_shape, x_bsz, self.k, self.k)
 
             # Make everything batch mode
             x = x.unsqueeze(-2)
             assert x.shape == (*x_batch_shape, x_bsz, 1, self.D)
 
+            # Permute s.t. x_bsz is at the front
+            x = x.permute(-3, *range(len(x_batch_shape)), -2, -1)
+            inducing_points = inducing_points.permute(-3, *range(len(x_batch_shape)), -2, -1)
+            inducing_values = inducing_values.permute(-2, *range(len(batch_shape)), -1)
+            variational_inducing_covar = variational_inducing_covar.permute(-2, *range(len(batch_shape)), -1)
+
             # Compute forward mode in the standard way
-            dist = super().forward(x, inducing_points, inducing_values, variational_inducing_covar, **kwargs)
-            predictive_mean = dist.mean  # (*batch_shape, x_bsz, 1)
-            predictive_covar = dist.covariance_matrix  # (*batch_shape, x_bsz, 1, 1)
+            dist = super().forward(
+                x, inducing_points, inducing_values, DiagLinearOperator(variational_inducing_covar), **kwargs
+            )
+            predictive_mean = dist.mean  # (x_bsz, *batch_shape, 1)
+            predictive_covar = dist.covariance_matrix  # (x_bsz, *batch_shape, 1, 1)
 
             # Undo batch mode
             predictive_mean = predictive_mean.squeeze(-1)
             predictive_var = predictive_covar.squeeze(-2).squeeze(-1)
             assert predictive_var.shape == predictive_covar.shape[:-2]
             assert predictive_mean.shape == predictive_covar.shape[:-2]
+
+            # Revert permutation
+            predictive_mean = predictive_mean.permute(*range(1, len(x_batch_shape) + 1), 0)
+            predictive_var = predictive_var.permute(*range(1, len(x_batch_shape) + 1), 0)
 
             # Return the distribution
             return MultivariateNormal(predictive_mean, DiagLinearOperator(predictive_var))
@@ -256,25 +266,49 @@ class NNVariationalStrategy(UnwhitenedVariationalStrategy):
 
         # compute logdet_q
         inducing_point_log_variational_covar = (variational_stddev[..., kl_indices] ** 2).log()
-        logdet_q = torch.sum(inducing_point_log_variational_covar, dim=-1)
+        logdet_q = torch.sum(inducing_point_log_variational_covar, dim=-1)  # \log \det S  (batch)
 
         # Select a mini-batch of inducing points according to kl_indices, and their k-nearest neighbors
-        inducing_points = self.inducing_points[..., kl_indices, :]
-        nearest_neighbor_indices = self.nn_xinduce_idx[..., kl_indices - self.k, :].to(inducing_points.device)
+        inducing_points = self.inducing_points[..., kl_indices, :]  # batch x M_b x D
+        nearest_neighbor_indices = self.nn_xinduce_idx[..., kl_indices - self.k, :].to(
+            inducing_points.device
+        )  # batch x M_b x k
         expanded_inducing_points_all = self.inducing_points.unsqueeze(-2).expand(
             *self._inducing_batch_shape, self.M, self.k, self.D
-        )
+        )  # batch x M x k x D  (k is replica)
         expanded_nearest_neighbor_indices = nearest_neighbor_indices.unsqueeze(-1).expand(
             *self._inducing_batch_shape, kl_bs, self.k, self.D
-        )
-        nearest_neighbors = expanded_inducing_points_all.gather(-3, expanded_nearest_neighbor_indices)
+        )  # batch x M_b x k x D (D is replica)
+        nearest_neighbors = expanded_inducing_points_all.gather(
+            -3, expanded_nearest_neighbor_indices
+        )  # batch x M_b x k x D
+
+        # Compute covariance matrices between NNs and inducing points
+        # Permute s.t. the kl_indices batch dimension comes before the regular batch dimensions
+        inducing_points_permuted = inducing_points.permute(-2, *range(len(self._inducing_batch_shape)), -1).unsqueeze(
+            -2
+        )  # M_b x batch x 1 x D
+        nearest_neighbors_permuted = nearest_neighbors.permute(
+            -3, *range(len(self._inducing_batch_shape)), -2, -1
+        )  # M_b x batch x k x D
+        cov_permuted = self.model.covar_module.forward(
+            nearest_neighbors_permuted, nearest_neighbors_permuted
+        )  # M_b x batch x k x k
+        cross_cov_permuted = self.model.covar_module.forward(
+            nearest_neighbors_permuted, inducing_points_permuted
+        )  # M_b x batch x k x 1
+        # Revert permutation
+        cov = cov_permuted.permute(*range(1, len(self._inducing_batch_shape) + 1), 0, -2, -1)  # batch x M_b x k x k
+        cross_cov = cross_cov_permuted.permute(
+            *range(1, len(self._inducing_batch_shape) + 1), 0, -2, -1
+        )  # batch x M_b x k x 1
 
         # compute interp_term
-        cov = self.model.covar_module.forward(nearest_neighbors, nearest_neighbors)
-        cross_cov = self.model.covar_module.forward(nearest_neighbors, inducing_points.unsqueeze(-2))
         interp_term = torch.linalg.solve(
             cov + self.jitter_val * torch.eye(self.k, device=self.inducing_points.device), cross_cov
-        ).squeeze(-1)
+        ).squeeze(
+            -1
+        )  # M_b x batch x k
 
         # compte logdet_p
         invquad_term_for_F = torch.sum(interp_term * cross_cov.squeeze(-1), dim=-1)

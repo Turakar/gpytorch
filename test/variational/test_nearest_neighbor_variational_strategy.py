@@ -53,12 +53,14 @@ class TestVNNGP(VariationalTestCase, unittest.TestCase):
                 )
 
                 if constant_mean:
-                    self.mean_module = gpytorch.means.ConstantMean()
+                    self.mean_module = gpytorch.means.ConstantMean(batch_shape=inducing_batch_shape)
                     self.mean_module.initialize(constant=1.0)
                 else:
-                    self.mean_module = gpytorch.means.ZeroMean()
+                    self.mean_module = gpytorch.means.ZeroMean(batch_shape=inducing_batch_shape)
 
-                self.covar_module = gpytorch.kernels.ScaleKernel(gpytorch.kernels.RBFKernel())
+                self.covar_module = gpytorch.kernels.ScaleKernel(
+                    gpytorch.kernels.RBFKernel(batch_shape=inducing_batch_shape), batch_shape=inducing_batch_shape
+                )
 
             def forward(self, x):
                 mean_x = self.mean_module(x)
@@ -69,7 +71,7 @@ class TestVNNGP(VariationalTestCase, unittest.TestCase):
                 if x is not None:
                     if x.dim() == 1:
                         x = x.unsqueeze(-1)
-                return self.variational_strategy(x=x, prior=False, **kwargs)
+                return self.variational_strategy(x=x, prior=prior, **kwargs)
 
         k = 3
         d = 2
@@ -85,7 +87,7 @@ class TestVNNGP(VariationalTestCase, unittest.TestCase):
         mll_cls=gpytorch.mlls.VariationalELBO,
         cuda=False,
     ):
-        # We cannot inheret the superclass method
+        # We cannot inherit the superclass method
         # Because it sets the training data to be the inducing points
 
         train_x = model.variational_strategy.inducing_points
@@ -136,7 +138,7 @@ class TestVNNGP(VariationalTestCase, unittest.TestCase):
         expected_batch_shape=None,
         constant_mean=True,
     ):
-        # We cannot inheret the superclass method
+        # We cannot inherit the superclass method
         # Because it expects `variational_params_intialized` to be set to 0
 
         # Batch shapes
