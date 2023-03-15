@@ -292,7 +292,7 @@ class NNVariationalStrategy(UnwhitenedVariationalStrategy):
 
         # Select a mini-batch of inducing points according to kl_indices, and their k-nearest neighbors
         inducing_points = self.inducing_points[..., kl_indices, :]  # batch x M_b x D
-        nearest_neighbor_indices = self.nn_xinduce_idx[..., kl_indices - self.k, :].to(
+        nearest_neighbor_indices = self.nn_xinduce_idx[..., kl_indices.cpu() - self.k, :].to(
             inducing_points.device
         )  # batch x M_b x k
         expanded_inducing_points_all = self.inducing_points.unsqueeze(-2).expand(
