@@ -194,11 +194,7 @@ class LMCVariationalStrategy(_VariationalStrategy):
         :rtype: ~gpytorch.distributions.MultitaskMultivariateNormal (... x N x num_tasks)
             or ~gpytorch.distributions.MultivariateNormal (... x N)
         """
-        if x is not None:
-            x_batch = x.unsqueeze(-3).expand(*x.shape[:-2], self.num_latents, *x.shape[-2:])
-        else:
-            x_batch = None
-        latent_dist = self.base_variational_strategy(x_batch, prior=prior, **kwargs)
+        latent_dist = self.base_variational_strategy(x, prior=prior, **kwargs)
         num_batch = len(latent_dist.batch_shape)
         latent_dim = num_batch + self.latent_dim
 
