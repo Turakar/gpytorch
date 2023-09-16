@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+from linear_operator.operators import MaskedLinearOperator
+
 from .. import settings
 from ..distributions import MultivariateNormal
 from ..likelihoods import _GaussianLikelihoodBase
@@ -41,7 +43,7 @@ class ExactMarginalLogLikelihood(MarginalLogLikelihood):
 
         # Add log probs of priors on the (functions of) parameters
         res_ndim = res.ndim
-        for name, module, prior, closure, _ in self.named_priors():
+        for name, module, prior, closure, _ in self.model.named_priors():
             prior_term = prior.log_prob(closure(module))
             res.add_(prior_term.view(*prior_term.shape[:res_ndim], -1).sum(dim=-1))
 
@@ -66,8 +68,13 @@ class ExactMarginalLogLikelihood(MarginalLogLikelihood):
         # Remove NaN values if enabled
         if settings.observation_nan_policy.value() == "mask":
             observed = settings.observation_nan_policy._get_observed(target, output.event_shape)
-            output = output[(...,) + observed]
-            target = target[(...,) + observed]
+            output = MultivariateNormal(
+                mean=output.mean[..., observed],
+                covariance_matrix=MaskedLinearOperator(
+                    output.lazy_covariance_matrix, observed.reshape(-1), observed.reshape(-1)
+                ),
+            )
+            target = target[..., observed]
         elif settings.observation_nan_policy.value() == "fill":
             raise ValueError("NaN observation policy 'fill' is not supported by ExactMarginalLogLikelihood!")
 

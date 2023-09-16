@@ -333,6 +333,13 @@ class TestMultiTaskMultivariateNormal(BaseTestCase, unittest.TestCase):
         self.assertAllClose(part.mean, mean[1, -1])
         self.assertAllClose(part.covariance_matrix, covar[1, -1])
 
+        part = distribution[1, 0, ...]
+        self.assertIsInstance(part, MultitaskMultivariateNormal)
+        self.assertEqual(part.batch_shape, torch.Size(()))
+        self.assertEqual(part.event_shape, torch.Size((3, 2)))
+        self.assertAllClose(part.mean, mean[1, 0])
+        self.assertAllClose(part.covariance_matrix, covar[1, 0])
+
         part = distribution[..., 2, 1]
         self.assertFalse(isinstance(part, MultitaskMultivariateNormal))
         self.assertIsInstance(part, MultivariateNormal)
@@ -464,6 +471,13 @@ class TestMultiTaskMultivariateNormal(BaseTestCase, unittest.TestCase):
         self.assertAllClose(part.mean, mean[..., torch.tensor([2, 0, 2]), torch.tensor([1, 0, 0])])
         indices = torch.tensor([flat(2, 1), flat(0, 0), flat(2, 0)])
         self.assertAllClose(part.covariance_matrix, covar[..., indices, :][..., indices])
+
+    def test_repr(self):
+        mean = torch.randn(5, 1, 3)
+        covar = torch.eye(6)
+        dist = MultitaskMultivariateNormal(mean, covar)
+        dist_repr = str(dist)
+        self.assertEqual(dist_repr, "MultitaskMultivariateNormal(mean shape: torch.Size([5, 2, 3]))")
 
 
 if __name__ == "__main__":

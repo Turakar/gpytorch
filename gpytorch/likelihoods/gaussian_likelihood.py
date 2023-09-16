@@ -5,7 +5,7 @@ from copy import deepcopy
 from typing import Any, Optional, Tuple, Union
 
 import torch
-from linear_operator.operators import LinearOperator, ZeroLinearOperator
+from linear_operator.operators import LinearOperator, MaskedLinearOperator, ZeroLinearOperator
 from torch import Tensor
 from torch.distributions import Distribution, Normal
 
@@ -48,9 +48,14 @@ class _GaussianLikelihoodBase(Likelihood):
         nan_policy = settings.observation_nan_policy.value()
         if nan_policy == "mask":
             observed = settings.observation_nan_policy._get_observed(target, input.event_shape)
-            input = input[(...,) + observed]
-            noise = noise[(...,) + observed]
-            target = target[(...,) + observed]
+            input = MultivariateNormal(
+                mean=input.mean[..., observed],
+                covariance_matrix=MaskedLinearOperator(
+                    input.lazy_covariance_matrix, observed.reshape(-1), observed.reshape(-1)
+                ),
+            )
+            noise = noise[..., observed]
+            target = target[..., observed]
         elif nan_policy == "fill":
             missing = torch.isnan(target)
             target = settings.observation_nan_policy._fill_tensor(target)
@@ -82,8 +87,13 @@ class _GaussianLikelihoodBase(Likelihood):
         nan_policy = settings.observation_nan_policy.value()
         if nan_policy == "mask":
             observed = settings.observation_nan_policy._get_observed(observations, marginal.event_shape)
-            marginal = marginal[(...,) + observed]
-            observations = observations[(...,) + observed]
+            marginal = MultivariateNormal(
+                mean=marginal.mean[..., observed],
+                covariance_matrix=MaskedLinearOperator(
+                    marginal.lazy_covariance_matrix, observed.reshape(-1), observed.reshape(-1)
+                ),
+            )
+            observations = observations[..., observed]
         elif nan_policy == "fill":
             missing = torch.isnan(observations)
             observations = settings.observation_nan_policy._fill_tensor(observations)
@@ -161,7 +171,69 @@ class GaussianLikelihood(_GaussianLikelihoodBase):
         self.noise_covar.initialize(raw_noise=value)
 
     def marginal(self, function_dist: MultivariateNormal, *args: Any, **kwargs: Any) -> MultivariateNormal:
+        r"""
+        :return: Analytic marginal :math:`p(\mathbf y)`.
         """
+        return super().marginal(function_dist, *args, **kwargs)
+
+
+class GaussianLikelihoodWithMissingObs(GaussianLikelihood):
+    r"""
+    The standard likelihood for regression with support for missing values.
+    Assumes a standard homoskedastic noise model:
+
+    .. math::
+        p(y \mid f) = f + \epsilon, \quad \epsilon \sim \mathcal N (0, \sigma^2)
+
+    where :math:`\sigma^2` is a noise parameter. Values of y that are nan do
+    not impact the likelihood calculation.
+
+    .. note::
+        This likelihood can be used for exact or approximate inference.
+
+    .. warning::
+        This likelihood is deprecated in favor of :class:`gpytorch.settings.observation_nan_policy`.
+
+    :param noise_prior: Prior for noise parameter :math:`\sigma^2`.
+    :type noise_prior: ~gpytorch.priors.Prior, optional
+    :param noise_constraint: Constraint for noise parameter :math:`\sigma^2`.
+    :type noise_constraint: ~gpytorch.constraints.Interval, optional
+    :param batch_shape: The batch shape of the learned noise parameter (default: []).
+    :type batch_shape: torch.Size, optional
+    :var torch.Tensor noise: :math:`\sigma^2` parameter (noise)
+
+    .. note::
+        GaussianLikelihoodWithMissingObs has an analytic marginal distribution.
+    """
+
+    MISSING_VALUE_FILL: float = -999.0
+
+    def __init__(self, **kwargs: Any) -> None:
+        warnings.warn(
+            "GaussianLikelihoodWithMissingObs is replaced by gpytorch.settings.observation_nan_policy('fill').",
+            DeprecationWarning,
+        )
+        super().__init__(**kwargs)
+
+    def _get_masked_obs(self, x: Tensor) -> Tuple[Tensor, Tensor]:
+        missing_idx = x.isnan()
+        x_masked = x.masked_fill(missing_idx, self.MISSING_VALUE_FILL)
+        return missing_idx, x_masked
+
+    def expected_log_prob(self, target: Tensor, input: MultivariateNormal, *params: Any, **kwargs: Any) -> Tensor:
+        missing_idx, target = self._get_masked_obs(target)
+        res = super().expected_log_prob(target, input, *params, **kwargs)
+        return res * ~missing_idx
+
+    def log_marginal(
+        self, observations: Tensor, function_dist: MultivariateNormal, *params: Any, **kwargs: Any
+    ) -> Tensor:
+        missing_idx, observations = self._get_masked_obs(observations)
+        res = super().log_marginal(observations, function_dist, *params, **kwargs)
+        return res * ~missing_idx
+
+    def marginal(self, function_dist: MultivariateNormal, *args: Any, **kwargs: Any) -> MultivariateNormal:
+        r"""
         :return: Analytic marginal :math:`p(\mathbf y)`.
         """
         return super().marginal(function_dist, *args, **kwargs)
@@ -281,14 +353,14 @@ class FixedNoiseGaussianLikelihood(_GaussianLikelihoodBase):
         return res
 
     def marginal(self, function_dist: MultivariateNormal, *args: Any, **kwargs: Any) -> MultivariateNormal:
-        """
+        r"""
         :return: Analytic marginal :math:`p(\mathbf y)`.
         """
         return super().marginal(function_dist, *args, **kwargs)
 
 
 class DirichletClassificationLikelihood(FixedNoiseGaussianLikelihood):
-    """
+    r"""
     A classification likelihood that treats the labels as regression targets with fixed heteroscedastic noise.
     From Milios et al, NeurIPS, 2018 [https://arxiv.org/abs/1805.10915].
 
@@ -383,7 +455,7 @@ class DirichletClassificationLikelihood(FixedNoiseGaussianLikelihood):
         return fantasy_liklihood
 
     def marginal(self, function_dist: MultivariateNormal, *args: Any, **kwargs: Any) -> MultivariateNormal:
-        """
+        r"""
         :return: Analytic marginal :math:`p(\mathbf y)`.
         """
         return super().marginal(function_dist, *args, **kwargs)
