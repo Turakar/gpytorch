@@ -447,6 +447,19 @@ class observation_nan_policy(_value_context):
         return torch.nan_to_num(observations, nan=cls._fill_value)
 
 
+class use_keops(_feature_flag):
+    """
+    Whether or not to use KeOps under the hood (when using any :class:`gpytorch.kernels.keops.KeOpsKernel`.
+    In general, this flag should be set to True.
+    Setting it to false will resort to non-KeOps computation,
+    which will be slower but may be useful for debugging or timing comparisons.
+
+    (Default: True)
+    """
+
+    _default = True
+
+
 __all__ = [
     "_linalg_dtype_symeig",
     "_linalg_dtype_cholesky",
@@ -486,6 +499,7 @@ __all__ = [
     "terminate_cg_by_size",
     "trace_mode",
     "tridiagonal_jitter",
+    "use_keops",
     "use_toeplitz",
     "variational_cholesky_jitter",
     "verbose_linalg",
